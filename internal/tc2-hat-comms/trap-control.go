@@ -384,6 +384,15 @@ func parseMessageFromTrap(msg *Message) {
 		"STOPPED":             "trapStopped",
 		"MANUAL_MODE_TIMEOUT": "trapManualModeTimeout",
 		"MANUAL_ERROR":        "trapManualError",
+
+		// Holding cage. The payloads are JSON so their fields land in the event details.
+		"CAGE_NO_ENTRY":  "trapCageNoEntry",
+		"CAGE_CAPTURED":  "trapCageCaptured",
+		"CAGE_HOLDING":   "trapCageHolding",
+		"CAGE_RELEASING": "trapCageReleasing",
+		"CAGE_KILLING":   "trapCageKilling",
+		"CAGE_WAITING":   "trapCageWaiting",
+		"CAGE_FINISHED":  "trapCageFinished",
 	}
 
 	// Messages that we want to trigger the events to be uploaded right away.
@@ -394,6 +403,10 @@ func parseMessageFromTrap(msg *Message) {
 		"EXCEPTION",
 		"ERROR_CODE",
 		"MANUAL_ERROR",
+		// Someone needs to decide what to do with a caught animal, and the trap
+		// releases it on its own if nobody does.
+		"CAGE_CAPTURED",
+		"CAGE_FINISHED",
 	}
 
 	// Handle messages that we want to make events for

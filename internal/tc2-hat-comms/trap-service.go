@@ -107,6 +107,66 @@ func (s *trapService) CloseDoor(door int32) *dbus.Error {
 	return nil
 }
 
+// CageHold asks the trap to keep holding the animal in its cage for longer.
+func (s *trapService) CageHold() *dbus.Error {
+	log.Info("Holding the animal in the cage from DBus request")
+	if err := s.messenger.CageHold(); err != nil {
+		log.Errorf("Failed to hold the animal in the cage: %v", err)
+		return trapDbusErr(err)
+	}
+	return nil
+}
+
+// CageRelease asks the trap to let the animal out of its cage.
+func (s *trapService) CageRelease() *dbus.Error {
+	log.Info("Releasing the animal from the cage from DBus request")
+	if err := s.messenger.CageRelease(); err != nil {
+		log.Errorf("Failed to release the animal from the cage: %v", err)
+		return trapDbusErr(err)
+	}
+	return nil
+}
+
+// CageKill asks the trap to open its cage to the kill mechanism.
+func (s *trapService) CageKill() *dbus.Error {
+	log.Info("Opening the cage to the kill mechanism from DBus request")
+	if err := s.messenger.CageKill(); err != nil {
+		log.Errorf("Failed to open the cage to the kill mechanism: %v", err)
+		return trapDbusErr(err)
+	}
+	return nil
+}
+
+// CageWait asks the trap to wait longer for the animal to leave its cage.
+func (s *trapService) CageWait() *dbus.Error {
+	log.Info("Waiting longer for the animal to leave the cage from DBus request")
+	if err := s.messenger.CageWait(); err != nil {
+		log.Errorf("Failed to wait longer for the animal to leave the cage: %v", err)
+		return trapDbusErr(err)
+	}
+	return nil
+}
+
+// CageEscaped tells the trap the animal has left its cage.
+func (s *trapService) CageEscaped() *dbus.Error {
+	log.Info("Marking the animal in the cage as escaped from DBus request")
+	if err := s.messenger.CageEscaped(); err != nil {
+		log.Errorf("Failed to mark the animal in the cage as escaped: %v", err)
+		return trapDbusErr(err)
+	}
+	return nil
+}
+
+// CageKilled tells the trap the animal in its cage has been killed.
+func (s *trapService) CageKilled() *dbus.Error {
+	log.Info("Marking the animal in the cage as killed from DBus request")
+	if err := s.messenger.CageKilled(); err != nil {
+		log.Errorf("Failed to mark the animal in the cage as killed: %v", err)
+		return trapDbusErr(err)
+	}
+	return nil
+}
+
 func genTrapIntrospectable(v interface{}) introspect.Introspectable {
 	node := &introspect.Node{
 		Interfaces: []introspect.Interface{{

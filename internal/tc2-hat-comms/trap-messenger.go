@@ -204,6 +204,61 @@ func (u *TrapMessenger) CloseDoor(door int) error {
 	return HandleResponse(u.manualRequest(fmt.Sprintf("CLOSE_DOOR_%d", door)))
 }
 
+// Cage commands, for an animal held in the cage on a trap that has one fitted.
+// Unlike the manual requests these don't put the trap into manual mode, they steer the
+// cage sequence. Each is only accepted in part of the sequence, the trap NACKs, with the
+// reason in the payload, a command that doesn't apply.
+
+// CageHold asks the trap to keep holding the animal in the cage, for another
+// cage_hold_hours from now. Without one the trap releases the animal once that has passed.
+// The trap reports the new hold with a CAGE_HOLDING message.
+func (u *TrapMessenger) CageHold() error {
+	return HandleResponse(u.cageRequest("CAGE_HOLD"))
+}
+
+// CageRelease asks the trap to let the animal out of the cage, back through the spool.
+// The trap reports this with a CAGE_RELEASING message.
+func (u *TrapMessenger) CageRelease() error {
+	return HandleResponse(u.cageRequest("CAGE_RELEASE"))
+}
+
+// CageKill asks the trap to open the cage door to the kill mechanism.
+// The trap reports this with a CAGE_KILLING message.
+func (u *TrapMessenger) CageKill() error {
+	return HandleResponse(u.cageRequest("CAGE_KILL"))
+}
+
+// CageWait asks the trap, once it has released the animal or opened the door to the kill
+// mechanism, to wait another cage_exit_wait_hours for the animal to leave the cage.
+// The trap reports the new wait with a CAGE_WAITING message.
+func (u *TrapMessenger) CageWait() error {
+	return HandleResponse(u.cageRequest("CAGE_WAIT"))
+}
+
+// CageEscaped tells the trap the animal has left the cage, so it can carry on.
+// The trap reports this with a CAGE_FINISHED message.
+func (u *TrapMessenger) CageEscaped() error {
+	return HandleResponse(u.cageRequest("CAGE_ESCAPED"))
+}
+
+// CageKilled tells the trap the animal has been killed, so it can carry on.
+// The trap reports this with a CAGE_FINISHED message.
+func (u *TrapMessenger) CageKilled() error {
+	return HandleResponse(u.cageRequest("CAGE_KILLED"))
+}
+
+// cageRequest sends one of the cage commands.
+func (u *TrapMessenger) cageRequest(messageType string) (*Message, error) {
+	response, err := u.SendMessage(Message{Type: messageType})
+	if err != nil {
+		return nil, err
+	}
+	if response.Type == "BAD_KEY" {
+		return nil, fmt.Errorf("the trap doesn't have a cage enabled, or the program running on it doesn't support one")
+	}
+	return response, nil
+}
+
 // manualRequest sends a request that hands the trap over to manual mode.
 func (u *TrapMessenger) manualRequest(messageType string) (*Message, error) {
 	response, err := u.SendMessage(Message{Type: messageType})
