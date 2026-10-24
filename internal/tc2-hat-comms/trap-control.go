@@ -16,6 +16,15 @@ import (
 	"periph.io/x/conn/v3/gpio"
 )
 
+const (
+	// trapEnableDuration is how long an ENABLE keeps the trap enabled. If the camera powers
+	// off or is unplugged, the trap disables itself this long after the last one.
+	trapEnableDuration = 5 * time.Minute
+	// trapEnableRenewInterval is how often the enable is renewed while the trap should stay
+	// enabled. It is well under trapEnableDuration so a missed renewal doesn't matter.
+	trapEnableRenewInterval = 1 * time.Minute
+)
+
 // processTrapControl communicates the trap enabled/disabled state by writing
 // the "enable" variable over UART instead of setting a digital pin.
 func processTrapControl(config *CommsConfig, eventSignals chan event) error {
@@ -137,6 +146,11 @@ type sighting struct {
 // protect and trap species sightings. A protect sighting takes priority over a trap sighting.
 // trigger is the sighting that decided the state, or nil when the trap is in its default state.
 func trapState(config *CommsConfig, protect, trap sighting, now time.Time) (enabled bool, reason string, trigger *sighting) {
+	// In low power mode the Pi is not on all the time, so it can't keep the trap enabled
+	// while it is needed or see what is in front of it.
+	if config.LowPowerMode {
+		return false, "Camera is in low power mode, so it can't enable the trap", nil
+	}
 	if !protect.time.IsZero() && protect.time.Add(config.ProtectDuration).After(now) {
 		return false, fmt.Sprintf("Found an %s of confidence %d that needs to be protected (seen at %s)",
 			protect.animal, protect.confidence, protect.time.Format("15:04:05")), &protect
@@ -161,6 +175,11 @@ func classificationChecks(config *CommsConfig, eventSignals chan event, messenge
 
 	recordingStartTime := time.Time{}
 	trackStartTime := time.Time{}
+	lastEnableSent := time.Time{}
+
+	if config.LowPowerMode {
+		log.Warn("Camera is in low power mode, so it won't enable the trap. The camera can only control the trap in high power mode.")
+	}
 
 	for {
 		trapEnabled, reason, trigger := trapState(config, lastProtectSighting, lastTrapSighting, time.Now())
@@ -175,6 +194,7 @@ func classificationChecks(config *CommsConfig, eventSignals chan event, messenge
 				if err != nil {
 					return fmt.Errorf("failed to enable trap: %v", err)
 				}
+				lastEnableSent = time.Now()
 				trapEnableTime := time.Now()
 				log.Infof("TrapEnableTime: %s", trapEnableTime.Format("15:04:05.999")) // TODO, we can get better accuracy on when this actually
 				details := map[string]any{
@@ -222,6 +242,15 @@ func classificationChecks(config *CommsConfig, eventSignals chan event, messenge
 					Details:   details,
 				})
 				uploadEventsNow()
+			}
+		} else if trapEnabled && time.Since(lastEnableSent) >= trapEnableRenewInterval {
+			// Renew the enable so the trap stays enabled. If this fails it is tried again on
+			// the next check, well before the last enable runs out.
+			log.Debug("Renewing trap enable")
+			if _, err := messenger.RenewEnable(); err != nil {
+				log.Errorf("Failed to renew trap enable: %v", err)
+			} else {
+				lastEnableSent = time.Now()
 			}
 		}
 
@@ -288,6 +317,9 @@ type Message struct {
 	Type               string
 	Payload            string
 	PayloadUnmarshaled any
+	// quiet is for messages that are sent often. They are only saved to the trap history
+	// if they fail.
+	quiet bool
 }
 
 func (m *Message) String() string {

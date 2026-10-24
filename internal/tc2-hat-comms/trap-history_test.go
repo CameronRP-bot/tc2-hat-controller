@@ -114,6 +114,7 @@ func TestTrapMessengerHistory(t *testing.T) {
 	trap := &fakeTrap{lines: make(chan []byte, 16), responses: map[string]string{
 		"PING":      "ACK",
 		"WRITE":     "ACK",
+		"ENABLE":    "ACK",
 		"CAGE_KILL": "NACK",
 	}}
 	h := newTestHistory(t, 100)
@@ -126,11 +127,11 @@ func TestTrapMessengerHistory(t *testing.T) {
 	_, err := m.SendMessage(Message{Type: "CAGE_KILL"})
 	require.NoError(t, err)
 
-	// File chunks aren't saved unless they fail.
-	_, err = m.SendMessage(Message{Type: "WRITE", Payload: "a.py.ztmp,[\"abc\"]"})
+	// Quiet messages, like file chunks, aren't saved unless they fail.
+	_, err = m.SendMessage(Message{Type: "WRITE", Payload: "a.py.ztmp,[\"abc\"]", quiet: true})
 	require.NoError(t, err)
 	trap.responses["WRITE"] = ""
-	_, err = m.SendMessage(Message{Type: "WRITE", Payload: "a.py.ztmp,[\"def\"]"})
+	_, err = m.SendMessage(Message{Type: "WRITE", Payload: "a.py.ztmp,[\"def\"]", quiet: true})
 	require.Error(t, err)
 
 	// Only the first of a run of unanswered PINGs is saved.
@@ -141,6 +142,15 @@ func TestTrapMessengerHistory(t *testing.T) {
 	trap.responses["PING"] = "ACK"
 	require.NoError(t, m.Ping())
 	require.NoError(t, m.Ping())
+
+	// Enabling is saved with how long it lasts, renewing it only if it fails.
+	_, err = m.SetEnable(true)
+	require.NoError(t, err)
+	_, err = m.RenewEnable()
+	require.NoError(t, err)
+	trap.responses["ENABLE"] = ""
+	_, err = m.RenewEnable()
+	require.Error(t, err)
 
 	// A line that can't be read, then a message the trap sends on its own.
 	trap.lines <- []byte("<0|TRIGG")
@@ -158,6 +168,10 @@ func TestTrapMessengerHistory(t *testing.T) {
 		"received ACK 7",
 		"sent PING 8",
 		"received ACK 8",
+		"sent ENABLE 9 300",
+		"received ACK 9",
+		"sent ENABLE 11 300",
+		"failed ENABLE 11 write failed",
 		`lost  0 invalid frame: "<0|TRIGG"`,
 		"received TRIGGERED 0",
 	}, historySummary(t, h))

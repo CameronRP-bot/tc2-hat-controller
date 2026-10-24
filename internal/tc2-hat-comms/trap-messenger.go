@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"sync"
 	"time"
 
@@ -110,10 +111,11 @@ func (u *TrapMessenger) SendMessage(message Message) (*Message, error) {
 	line := message.ToUARTLine()
 	log.Debugf("Message: '%s'", line)
 
-	// The chunks of a file being uploaded would fill the history, so WRITE messages and
-	// their responses are only saved if they fail. While the trap isn't answering, PING is
-	// sent every few seconds, so only the first PING without a reply is saved.
-	quiet := message.Type == "WRITE"
+	// Quiet messages, such as the chunks of a file being uploaded, would fill the history,
+	// so they and their responses are only saved if they fail. While the trap isn't
+	// answering, PING is sent every few seconds, so only the first PING without a reply is
+	// saved.
+	quiet := message.quiet
 	ping := message.Type == "PING"
 	sent := newHistoryEntry("sent", &message)
 	if !quiet && !ping {
@@ -181,13 +183,29 @@ func (u *TrapMessenger) Ping() error {
 	return nil
 }
 
+// SetEnable enables or disables the trap. An enable only lasts for trapEnableDuration, so
+// while the trap should stay enabled it needs to be renewed with RenewEnable.
 func (u *TrapMessenger) SetEnable(enable bool) (bool, error) {
-	message := Message{}
+	message := Message{Type: "DISABLE"}
 	if enable {
-		message.Type = "ENABLE"
-	} else {
-		message.Type = "DISABLE"
+		message = enableMessage()
 	}
+	return u.sendEnable(message)
+}
+
+// RenewEnable keeps the trap enabled for another trapEnableDuration. It is sent often, so it
+// is only saved to the history if it fails.
+func (u *TrapMessenger) RenewEnable() (bool, error) {
+	message := enableMessage()
+	message.quiet = true
+	return u.sendEnable(message)
+}
+
+func enableMessage() Message {
+	return Message{Type: "ENABLE", Payload: strconv.Itoa(int(trapEnableDuration.Seconds()))}
+}
+
+func (u *TrapMessenger) sendEnable(message Message) (bool, error) {
 	response, err := u.SendMessage(message)
 	if err != nil {
 		return false, err
@@ -451,7 +469,7 @@ func (u *TrapMessenger) CopyData(localData []byte, destFile string, force bool) 
 		if err != nil {
 			return false, fmt.Errorf("failed to marshal chunk: %v", err)
 		}
-		if err := HandleResponse(u.SendMessage(Message{Type: "WRITE", Payload: compressedBase + "," + string(chunk)})); err != nil {
+		if err := HandleResponse(u.SendMessage(Message{Type: "WRITE", Payload: compressedBase + "," + string(chunk), quiet: true})); err != nil {
 			return false, fmt.Errorf("failed to write chunk at offset %d: %v", i, err)
 		}
 	}
