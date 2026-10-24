@@ -20,18 +20,23 @@ import (
 // It holds a persistent serial port and routes incoming messages to either
 // pending response waiters (matched by ID) or an unsolicited message handler.
 type TrapMessenger struct {
-	port               *serialhelper.SerialPort
-	sendMu             sync.Mutex // Serializes request/response exchanges so only one is in flight at a time.
+	write              func([]byte) error // Writes to the serial port.
+	lines              <-chan []byte      // Lines read from the serial port.
+	sendMu             sync.Mutex         // Serializes request/response exchanges so only one is in flight at a time.
 	pendingMu          sync.Mutex
 	pending            map[int]chan *Message
 	nextID             int
 	UnsolicitedHandler func(*Message)
+	// History, if set, is where every message sent to and received from the trap is saved.
+	History     *trapHistory
+	pingFailing bool // The last PING got no reply. Guarded by sendMu.
 }
 
 // NewTrapMessenger creates a TrapMessenger using an already-open SerialPort.
 func NewTrapMessenger(port *serialhelper.SerialPort) *TrapMessenger {
 	return &TrapMessenger{
-		port:    port,
+		write:   port.Write,
+		lines:   port.Lines,
 		pending: make(map[int]chan *Message),
 	}
 }
@@ -42,10 +47,13 @@ func (u *TrapMessenger) Start() {
 }
 
 func (u *TrapMessenger) routeMessages() {
-	for line := range u.port.Lines {
+	for line := range u.lines {
 		msg, err := ParseLine(line)
 		if err != nil {
 			log.Warnf("Failed to parse incoming message %q: %v", line, err)
+			// Save that a line was lost, it could have been a response or a message from the
+			// trap. The error includes the line as it was received.
+			u.record(TrapHistoryEntry{Time: time.Now(), Dir: "lost", Payload: err.Error()})
 			continue
 		}
 
@@ -62,11 +70,13 @@ func (u *TrapMessenger) routeMessages() {
 			}
 			u.pendingMu.Unlock()
 			if ok {
+				// SendMessage saves the response to the history, after the message it answers.
 				ch <- msg
 				continue
 			}
 		}
 
+		u.record(newHistoryEntry("received", msg))
 		if u.UnsolicitedHandler != nil {
 			u.UnsolicitedHandler(msg)
 		} else {
@@ -100,7 +110,44 @@ func (u *TrapMessenger) SendMessage(message Message) (*Message, error) {
 	line := message.ToUARTLine()
 	log.Debugf("Message: '%s'", line)
 
-	if err := u.port.Write([]byte(line)); err != nil {
+	// The chunks of a file being uploaded would fill the history, so WRITE messages and
+	// their responses are only saved if they fail. While the trap isn't answering, PING is
+	// sent every few seconds, so only the first PING without a reply is saved.
+	quiet := message.Type == "WRITE"
+	ping := message.Type == "PING"
+	sent := newHistoryEntry("sent", &message)
+	if !quiet && !ping {
+		u.record(sent)
+	}
+
+	response, err := u.exchange(line, ch, id)
+	if err != nil {
+		if !(ping && u.pingFailing) {
+			if quiet || ping {
+				u.record(sent)
+			}
+			failed := newHistoryEntry("failed", &message)
+			failed.Payload = err.Error()
+			u.record(failed)
+		}
+		if ping {
+			u.pingFailing = true
+		}
+		return nil, err
+	}
+	if ping {
+		u.pingFailing = false
+		u.record(sent)
+	}
+	if !quiet {
+		u.record(newHistoryEntry("received", response))
+	}
+	return response, nil
+}
+
+// exchange writes a message to the trap and waits for its response on ch.
+func (u *TrapMessenger) exchange(line string, ch chan *Message, id int) (*Message, error) {
+	if err := u.write([]byte(line)); err != nil {
 		return nil, err
 	}
 
@@ -110,6 +157,16 @@ func (u *TrapMessenger) SendMessage(message Message) (*Message, error) {
 		return response, nil
 	case <-time.After(5 * time.Second):
 		return nil, fmt.Errorf("timeout waiting for response to message ID %d", id)
+	}
+}
+
+// record saves a message to the history, if the messenger has one.
+func (u *TrapMessenger) record(entry TrapHistoryEntry) {
+	if u.History == nil {
+		return
+	}
+	if err := u.History.Add(entry); err != nil {
+		log.Errorf("Failed to save trap message to history: %v", err)
 	}
 }
 

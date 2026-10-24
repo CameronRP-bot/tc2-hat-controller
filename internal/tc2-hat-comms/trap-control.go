@@ -28,6 +28,7 @@ func processTrapControl(config *CommsConfig, eventSignals chan event) error {
 
 	messenger := NewTrapMessenger(port)
 	messenger.UnsolicitedHandler = parseMessageFromTrap
+	messenger.History = history
 	messenger.Start()
 
 	// Wait to get PING response from trap
