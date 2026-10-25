@@ -408,6 +408,9 @@ func parseMessageFromTrap(msg *Message) {
 		"EXCEPTION":   "trapException",
 		"MAX_MOTION":  "trapMaxMotion",
 
+		// Only sent when the trap has a reed switch on the spool. The payload is JSON with a Reason.
+		"SPOOL_RESET_FAILED": "trapSpoolResetFailed",
+
 		// The payload is the door number, so it lands in the event details.
 		"DOOR_OPENED": "trapDoorOpened",
 		"DOOR_CLOSED": "trapDoorClosed",
@@ -436,6 +439,8 @@ func parseMessageFromTrap(msg *Message) {
 		"EXCEPTION",
 		"ERROR_CODE",
 		"MANUAL_ERROR",
+		// The trap can't catch anything until someone sorts out the spool.
+		"SPOOL_RESET_FAILED",
 		// Someone needs to decide what to do with a caught animal, and the trap
 		// releases it on its own if nobody does.
 		"CAGE_CAPTURED",

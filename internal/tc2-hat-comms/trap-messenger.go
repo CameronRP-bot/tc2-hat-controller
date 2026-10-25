@@ -253,7 +253,8 @@ func (u *TrapMessenger) ReleaseSpool() error {
 
 // ResetSpool asks the trap to reset the spool.
 // Like ReleaseSpool this puts the trap into manual mode, and the trap reports that it
-// has reset with a SPOOL_RESET message.
+// has reset with a SPOOL_RESET message, or SPOOL_RESET_FAILED if its reed switch shows
+// the spool didn't stay reset.
 func (u *TrapMessenger) ResetSpool() error {
 	return HandleResponse(u.manualRequest("RESET_SPOOL"))
 }
