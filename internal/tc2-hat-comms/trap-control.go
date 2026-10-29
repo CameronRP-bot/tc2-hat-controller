@@ -418,6 +418,9 @@ func parseMessageFromTrap(msg *Message) {
 		// Only sent when the trap has a reed switch on the spool. The payload is JSON with a Reason.
 		"SPOOL_RESET_FAILED": "trapSpoolResetFailed",
 
+		// Sent when the trap starts if its RTC lost power. The payload is JSON with a Reason.
+		"RTC_BATTERY_FLAT": "trapRtcBatteryFlat",
+
 		// The payload is the door number, so it lands in the event details.
 		"DOOR_OPENED": "trapDoorOpened",
 		"DOOR_CLOSED": "trapDoorClosed",
