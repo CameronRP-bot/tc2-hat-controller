@@ -395,6 +395,13 @@ func setTimeWhenNtpSynced(messenger *TrapMessenger) {
 func parseMessageFromTrap(msg *Message) {
 	log.Printf("Trap message: %+v", msg)
 
+	// The trap sends its status whenever it changes. This isn't an event, as the events
+	// below cover what matters, it is passed on over DBus for anything showing the status.
+	if msg.Type == "STATUS_CHANGED" {
+		emitTrapStatus(msg.Payload)
+		return
+	}
+
 	// eventMessages maps trap message type to event type.
 	// For these events we will just make an event of the given type and add the payload in the details.
 	eventMessages := map[string]string{

@@ -347,6 +347,26 @@ func (u *TrapMessenger) manualRequest(messageType string) (*Message, error) {
 	return response, nil
 }
 
+// Status asks the trap what it is doing. It returns the JSON payload of the trap's
+// STATUS_R reply, with fields such as State, CagePhase, Enabled and DisabledReason (see
+// status_reply in spool-py). It is quiet, so polling it doesn't fill the history. The trap
+// also sends its status when it changes, which is passed on as a StatusChanged signal.
+func (u *TrapMessenger) Status() (string, error) {
+	response, err := u.SendMessage(Message{Type: "STATUS", quiet: true})
+	if err != nil {
+		return "", err
+	}
+	switch response.Type {
+	case "STATUS_R":
+		return response.Payload, nil
+	case "NACK":
+		// Trap software from before STATUS NACKs messages it doesn't know.
+		return "", fmt.Errorf("the software on the trap is too old to report its status")
+	default:
+		return "", fmt.Errorf("unexpected %s response to STATUS", response.Type)
+	}
+}
+
 func (u *TrapMessenger) ReadTime() error {
 	return HandleResponse(u.SendMessage(Message{Type: "READ_TIME"}))
 }

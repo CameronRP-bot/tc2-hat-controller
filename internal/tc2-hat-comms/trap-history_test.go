@@ -85,6 +85,7 @@ func TestTrapHistoryTrim(t *testing.T) {
 type fakeTrap struct {
 	lines     chan []byte
 	responses map[string]string
+	payloads  map[string]string // Response payloads, by response type.
 }
 
 func (f *fakeTrap) write(data []byte) error {
@@ -96,7 +97,7 @@ func (f *fakeTrap) write(data []byte) error {
 	if respType == "" {
 		return errors.New("write failed")
 	}
-	resp := Message{ID: msg.ID, Type: respType}
+	resp := Message{ID: msg.ID, Type: respType, Payload: f.payloads[respType]}
 	f.lines <- []byte(strings.TrimSpace(resp.ToUARTLine()))
 	return nil
 }
@@ -152,8 +153,10 @@ func TestTrapMessengerHistory(t *testing.T) {
 	_, err = m.RenewEnable()
 	require.Error(t, err)
 
-	// A line that can't be read, then a message the trap sends on its own.
+	// A line that can't be read, then messages the trap sends on its own.
 	trap.lines <- []byte("<0|TRIGG")
+	trap.lines <- []byte(strings.TrimSpace((&Message{Type: "STATUS_CHANGED", Payload: `{"State": "ARMED"}`}).ToUARTLine()))
+	require.Equal(t, "STATUS_CHANGED", (<-unsolicited).Type)
 	trap.lines <- []byte(strings.TrimSpace((&Message{Type: "TRIGGERED"}).ToUARTLine()))
 	<-unsolicited
 
@@ -173,6 +176,7 @@ func TestTrapMessengerHistory(t *testing.T) {
 		"sent ENABLE 11 300",
 		"failed ENABLE 11 write failed",
 		`lost  0 invalid frame: "<0|TRIGG"`,
+		`received STATUS_CHANGED 0 {"State": "ARMED"}`,
 		"received TRIGGERED 0",
 	}, historySummary(t, h))
 }

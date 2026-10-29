@@ -7,6 +7,7 @@ import (
 	"errors"
 	"runtime"
 	"strings"
+	"sync/atomic"
 
 	"github.com/godbus/dbus/v5"
 	"github.com/godbus/dbus/v5/introspect"
@@ -20,6 +21,10 @@ const (
 type trapService struct {
 	messenger *TrapMessenger
 }
+
+// trapServiceConn is the bus the trap service is on, once it has started, for sending
+// signals from messages the trap sends on its own.
+var trapServiceConn atomic.Pointer[dbus.Conn]
 
 // startTrapService exports the trap service onto the system bus.
 // Requests are sent to the trap through the given messenger, which serializes them
@@ -44,7 +49,34 @@ func startTrapService(messenger *TrapMessenger) error {
 	if err := conn.Export(s, trapDbusPath, trapDbusName); err != nil {
 		return err
 	}
-	return conn.Export(genTrapIntrospectable(s), trapDbusPath, "org.freedesktop.DBus.Introspectable")
+	if err := conn.Export(genTrapIntrospectable(s), trapDbusPath, "org.freedesktop.DBus.Introspectable"); err != nil {
+		return err
+	}
+	trapServiceConn.Store(conn)
+	return nil
+}
+
+// emitTrapStatus sends a StatusChanged signal with the trap's status, as JSON (see
+// TrapMessenger.Status), when the trap reports that it has changed. Changes from before the
+// service has started are dropped, the Status method gets the current one.
+func emitTrapStatus(status string) {
+	conn := trapServiceConn.Load()
+	if conn == nil {
+		return
+	}
+	if err := conn.Emit(trapDbusPath, trapDbusName+".StatusChanged", status); err != nil {
+		log.Errorf("Failed to send the trap's status over DBus: %v", err)
+	}
+}
+
+// Status returns what the trap is doing, as JSON (see TrapMessenger.Status).
+// It isn't logged, as it is polled while the trap page is open.
+func (s *trapService) Status() (string, *dbus.Error) {
+	status, err := s.messenger.Status()
+	if err != nil {
+		return "", trapDbusErr(err)
+	}
+	return status, nil
 }
 
 // Restart restarts the trap.
@@ -172,6 +204,10 @@ func genTrapIntrospectable(v interface{}) introspect.Introspectable {
 		Interfaces: []introspect.Interface{{
 			Name:    trapDbusName,
 			Methods: introspect.Methods(v),
+			Signals: []introspect.Signal{{
+				Name: "StatusChanged",
+				Args: []introspect.Arg{{Name: "status", Type: "s"}},
+			}},
 		}},
 	}
 	return introspect.NewIntrospectable(node)
