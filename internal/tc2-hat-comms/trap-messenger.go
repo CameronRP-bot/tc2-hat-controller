@@ -31,6 +31,8 @@ type TrapMessenger struct {
 	// History, if set, is where every message sent to and received from the trap is saved.
 	History     *trapHistory
 	pingFailing bool // The last PING got no reply. Guarded by sendMu.
+	// OnUpload, if set, is called for each file CopyData finds needs uploading.
+	OnUpload func()
 }
 
 // NewTrapMessenger creates a TrapMessenger using an already-open SerialPort.
@@ -459,6 +461,10 @@ func (u *TrapMessenger) CopyData(localData []byte, destFile string, force bool) 
 			return false, nil
 		}
 		log.Println("\tForce flag is set, still uploading.")
+	}
+
+	if u.OnUpload != nil {
+		u.OnUpload()
 	}
 
 	if _, ok := fileHashes[compressedBase]; ok {

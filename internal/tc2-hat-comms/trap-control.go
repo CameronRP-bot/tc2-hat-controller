@@ -40,8 +40,15 @@ func processTrapControl(config *CommsConfig, eventSignals chan event) error {
 	messenger.History = history
 	messenger.Start()
 
+	// Start the DBus service so other services can see how connecting to the trap is
+	// going, and once connected, send requests to the trap.
+	if err := startTrapService(messenger); err != nil {
+		return fmt.Errorf("failed to start trap service: %v", err)
+	}
+
 	// Wait to get PING response from trap
 	log.Info("Waiting for PING response from trap...")
+	setStatus(trapPinging)
 	for {
 		if err := messenger.Ping(); err == nil {
 			break
@@ -57,6 +64,9 @@ func processTrapControl(config *CommsConfig, eventSignals chan event) error {
 
 	// Make sure it is running the latest software
 	log.Info("Checking trap software is up to date")
+
+	setStatus(trapCheckingSoftware)
+	messenger.OnUpload = func() { setStatus(trapUpdatingSoftware) }
 
 	// Before we start copying over the files we need to make sure that there are no tmp files already on the trap
 	if err := messenger.DeleteTmpFiles(); err != nil {
@@ -81,7 +91,10 @@ func processTrapControl(config *CommsConfig, eventSignals chan event) error {
 	}
 	log.Info("Checking config on trap is up to date")
 	log.Debug(string(configJSON))
+	setStatus(trapCheckingConfig)
+	messenger.OnUpload = func() { setStatus(trapUpdatingConfig) }
 	configUpdated, err := messenger.CopyData(configJSON, "/config.json", false)
+	messenger.OnUpload = nil
 	if err != nil {
 		return fmt.Errorf("failed to upload config to trap: %v", err)
 	}
@@ -96,6 +109,7 @@ func processTrapControl(config *CommsConfig, eventSignals chan event) error {
 
 	if configUpdated || fileUpdated {
 		log.Info("Trap config or software updated, restarting trap...")
+		setStatus(trapRestarting)
 		if err := messenger.Restart(); err != nil {
 			return fmt.Errorf("failed to restart trap: %v", err)
 		}
@@ -121,10 +135,8 @@ func processTrapControl(config *CommsConfig, eventSignals chan event) error {
 		go setTimeWhenNtpSynced(messenger)
 	}
 
-	// Start the DBus service so other services can send requests to the trap.
-	if err := startTrapService(messenger); err != nil {
-		return fmt.Errorf("failed to start trap service: %v", err)
-	}
+	// Trap is now connected and ready
+	trapIsConnected(messenger)
 
 	// Setup loop for monitoring classifications and enabling/disabling the trap
 	if err := classificationChecks(config, eventSignals, messenger); err != nil {
@@ -398,7 +410,10 @@ func parseMessageFromTrap(msg *Message) {
 	// The trap sends its status whenever it changes. This isn't an event, as the events
 	// below cover what matters, it is passed on over DBus for anything showing the status.
 	if msg.Type == "STATUS_CHANGED" {
-		emitTrapStatus(msg.Payload)
+		// Only update the trap status when the trap has finished connecting.
+		if isTrapConnected() {
+			emitStatus(msg.Payload)
+		}
 		return
 	}
 
