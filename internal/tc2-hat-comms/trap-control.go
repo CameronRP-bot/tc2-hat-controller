@@ -420,15 +420,16 @@ func parseMessageFromTrap(msg *Message) {
 	// eventMessages maps trap message type to event type.
 	// For these events we will just make an event of the given type and add the payload in the details.
 	eventMessages := map[string]string{
-		"MOTION":      "trapMotion",
-		"ENABLED":     "trapEnabled",
-		"DISABLED":    "trapDisabled",
-		"SPOOL_RESET": "trapSpoolReset",
-		"TRIGGERED":   "trapTriggered",
-		"RUNNING":     "trapRunning",
-		"ERROR_CODE":  "trapErrorCode",
-		"EXCEPTION":   "trapException",
-		"MAX_MOTION":  "trapMaxMotion",
+		"MOTION":        "trapMotion",
+		"ENABLED":       "trapEnabled",
+		"DISABLED":      "trapDisabled",
+		"SPOOL_RESET":   "trapSpoolReset",
+		"TRIGGERED":     "trapTriggered",
+		"DRY_TRIGGERED": "trapDryTriggered",
+		"RUNNING":       "trapRunning",
+		"ERROR_CODE":    "trapErrorCode",
+		"EXCEPTION":     "trapException",
+		"MAX_MOTION":    "trapMaxMotion",
 
 		// Only sent when the trap has a reed switch on the spool. The payload is JSON with a Reason.
 		"SPOOL_RESET_FAILED": "trapSpoolResetFailed",
@@ -461,6 +462,7 @@ func parseMessageFromTrap(msg *Message) {
 		"ENABLED",
 		"DISABLED",
 		"TRIGGERED",
+		"DRY_TRIGGERED",
 		"EXCEPTION",
 		"ERROR_CODE",
 		"MANUAL_ERROR",
