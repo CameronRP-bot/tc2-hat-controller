@@ -20,6 +20,7 @@ func TestTrapState(t *testing.T) {
 	tests := []struct {
 		name             string
 		enabledByDefault bool
+		lowPowerMode     bool
 		protect          sighting
 		trap             sighting
 		wantEnabled      bool
@@ -81,6 +82,14 @@ func TestTrapState(t *testing.T) {
 			wantEnabled:      true,
 			wantReason:       "No protect or trap species seen recently, trap is enabled by default",
 		},
+		{
+			name:             "low power mode never enables the trap",
+			enabledByDefault: true,
+			lowPowerMode:     true,
+			trap:             possum(10 * time.Second),
+			wantEnabled:      false,
+			wantReason:       "Camera is in low power mode, so it can't enable the trap",
+		},
 	}
 
 	for _, tt := range tests {
@@ -89,7 +98,7 @@ func TestTrapState(t *testing.T) {
 				TrapEnabledByDefault: tt.enabledByDefault,
 				ProtectDuration:      time.Minute,
 				TrapDuration:         2 * time.Minute,
-			}}
+			}, LowPowerMode: tt.lowPowerMode}
 			enabled, reason, trigger := trapState(conf, tt.protect, tt.trap, now)
 			assert.Equal(t, tt.wantEnabled, enabled)
 			assert.Equal(t, tt.wantReason, reason)

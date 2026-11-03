@@ -16,6 +16,15 @@ import (
 	"periph.io/x/conn/v3/gpio"
 )
 
+const (
+	// trapEnableDuration is how long an ENABLE keeps the trap enabled. If the camera powers
+	// off or is unplugged, the trap disables itself this long after the last one.
+	trapEnableDuration = 5 * time.Minute
+	// trapEnableRenewInterval is how often the enable is renewed while the trap should stay
+	// enabled. It is well under trapEnableDuration so a missed renewal doesn't matter.
+	trapEnableRenewInterval = 1 * time.Minute
+)
+
 // processTrapControl communicates the trap enabled/disabled state by writing
 // the "enable" variable over UART instead of setting a digital pin.
 func processTrapControl(config *CommsConfig, eventSignals chan event) error {
@@ -28,10 +37,18 @@ func processTrapControl(config *CommsConfig, eventSignals chan event) error {
 
 	messenger := NewTrapMessenger(port)
 	messenger.UnsolicitedHandler = parseMessageFromTrap
+	messenger.History = history
 	messenger.Start()
+
+	// Start the DBus service so other services can see how connecting to the trap is
+	// going, and once connected, send requests to the trap.
+	if err := startTrapService(messenger); err != nil {
+		return fmt.Errorf("failed to start trap service: %v", err)
+	}
 
 	// Wait to get PING response from trap
 	log.Info("Waiting for PING response from trap...")
+	setStatus(trapPinging)
 	for {
 		if err := messenger.Ping(); err == nil {
 			break
@@ -47,6 +64,9 @@ func processTrapControl(config *CommsConfig, eventSignals chan event) error {
 
 	// Make sure it is running the latest software
 	log.Info("Checking trap software is up to date")
+
+	setStatus(trapCheckingSoftware)
+	messenger.OnUpload = func() { setStatus(trapUpdatingSoftware) }
 
 	// Before we start copying over the files we need to make sure that there are no tmp files already on the trap
 	if err := messenger.DeleteTmpFiles(); err != nil {
@@ -71,7 +91,10 @@ func processTrapControl(config *CommsConfig, eventSignals chan event) error {
 	}
 	log.Info("Checking config on trap is up to date")
 	log.Debug(string(configJSON))
+	setStatus(trapCheckingConfig)
+	messenger.OnUpload = func() { setStatus(trapUpdatingConfig) }
 	configUpdated, err := messenger.CopyData(configJSON, "/config.json", false)
+	messenger.OnUpload = nil
 	if err != nil {
 		return fmt.Errorf("failed to upload config to trap: %v", err)
 	}
@@ -86,6 +109,7 @@ func processTrapControl(config *CommsConfig, eventSignals chan event) error {
 
 	if configUpdated || fileUpdated {
 		log.Info("Trap config or software updated, restarting trap...")
+		setStatus(trapRestarting)
 		if err := messenger.Restart(); err != nil {
 			return fmt.Errorf("failed to restart trap: %v", err)
 		}
@@ -111,10 +135,8 @@ func processTrapControl(config *CommsConfig, eventSignals chan event) error {
 		go setTimeWhenNtpSynced(messenger)
 	}
 
-	// Start the DBus service so other services can send requests to the trap.
-	if err := startTrapService(messenger); err != nil {
-		return fmt.Errorf("failed to start trap service: %v", err)
-	}
+	// Trap is now connected and ready
+	trapIsConnected(messenger)
 
 	// Setup loop for monitoring classifications and enabling/disabling the trap
 	if err := classificationChecks(config, eventSignals, messenger); err != nil {
@@ -136,6 +158,11 @@ type sighting struct {
 // protect and trap species sightings. A protect sighting takes priority over a trap sighting.
 // trigger is the sighting that decided the state, or nil when the trap is in its default state.
 func trapState(config *CommsConfig, protect, trap sighting, now time.Time) (enabled bool, reason string, trigger *sighting) {
+	// In low power mode the Pi is not on all the time, so it can't keep the trap enabled
+	// while it is needed or see what is in front of it.
+	if config.LowPowerMode {
+		return false, "Camera is in low power mode, so it can't enable the trap", nil
+	}
 	if !protect.time.IsZero() && protect.time.Add(config.ProtectDuration).After(now) {
 		return false, fmt.Sprintf("Found an %s of confidence %d that needs to be protected (seen at %s)",
 			protect.animal, protect.confidence, protect.time.Format("15:04:05")), &protect
@@ -160,6 +187,11 @@ func classificationChecks(config *CommsConfig, eventSignals chan event, messenge
 
 	recordingStartTime := time.Time{}
 	trackStartTime := time.Time{}
+	lastEnableSent := time.Time{}
+
+	if config.LowPowerMode {
+		log.Warn("Camera is in low power mode, so it won't enable the trap. The camera can only control the trap in high power mode.")
+	}
 
 	for {
 		trapEnabled, reason, trigger := trapState(config, lastProtectSighting, lastTrapSighting, time.Now())
@@ -174,6 +206,7 @@ func classificationChecks(config *CommsConfig, eventSignals chan event, messenge
 				if err != nil {
 					return fmt.Errorf("failed to enable trap: %v", err)
 				}
+				lastEnableSent = time.Now()
 				trapEnableTime := time.Now()
 				log.Infof("TrapEnableTime: %s", trapEnableTime.Format("15:04:05.999")) // TODO, we can get better accuracy on when this actually
 				details := map[string]any{
@@ -221,6 +254,15 @@ func classificationChecks(config *CommsConfig, eventSignals chan event, messenge
 					Details:   details,
 				})
 				uploadEventsNow()
+			}
+		} else if trapEnabled && time.Since(lastEnableSent) >= trapEnableRenewInterval {
+			// Renew the enable so the trap stays enabled. If this fails it is tried again on
+			// the next check, well before the last enable runs out.
+			log.Debug("Renewing trap enable")
+			if _, err := messenger.RenewEnable(); err != nil {
+				log.Errorf("Failed to renew trap enable: %v", err)
+			} else {
+				lastEnableSent = time.Now()
 			}
 		}
 
@@ -287,6 +329,9 @@ type Message struct {
 	Type               string
 	Payload            string
 	PayloadUnmarshaled any
+	// quiet is for messages that are sent often. They are only saved to the trap history
+	// if they fail.
+	quiet bool
 }
 
 func (m *Message) String() string {
@@ -362,18 +407,35 @@ func setTimeWhenNtpSynced(messenger *TrapMessenger) {
 func parseMessageFromTrap(msg *Message) {
 	log.Printf("Trap message: %+v", msg)
 
+	// The trap sends its status whenever it changes. This isn't an event, as the events
+	// below cover what matters, it is passed on over DBus for anything showing the status.
+	if msg.Type == "STATUS_CHANGED" {
+		// Only update the trap status when the trap has finished connecting.
+		if isTrapConnected() {
+			emitStatus(msg.Payload)
+		}
+		return
+	}
+
 	// eventMessages maps trap message type to event type.
 	// For these events we will just make an event of the given type and add the payload in the details.
 	eventMessages := map[string]string{
-		"MOTION":      "trapMotion",
-		"ENABLED":     "trapEnabled",
-		"DISABLED":    "trapDisabled",
-		"SPOOL_RESET": "trapSpoolReset",
-		"TRIGGERED":   "trapTriggered",
-		"RUNNING":     "trapRunning",
-		"ERROR_CODE":  "trapErrorCode",
-		"EXCEPTION":   "trapException",
-		"MAX_MOTION":  "trapMaxMotion",
+		"MOTION":        "trapMotion",
+		"ENABLED":       "trapEnabled",
+		"DISABLED":      "trapDisabled",
+		"SPOOL_RESET":   "trapSpoolReset",
+		"TRIGGERED":     "trapTriggered",
+		"DRY_TRIGGERED": "trapDryTriggered",
+		"RUNNING":       "trapRunning",
+		"ERROR_CODE":    "trapErrorCode",
+		"EXCEPTION":     "trapException",
+		"MAX_MOTION":    "trapMaxMotion",
+
+		// Only sent when the trap has a reed switch on the spool. The payload is JSON with a Reason.
+		"SPOOL_RESET_FAILED": "trapSpoolResetFailed",
+
+		// Sent when the trap starts if its RTC lost power. The payload is JSON with a Reason.
+		"RTC_BATTERY_FLAT": "trapRtcBatteryFlat",
 
 		// The payload is the door number, so it lands in the event details.
 		"DOOR_OPENED": "trapDoorOpened",
@@ -384,6 +446,15 @@ func parseMessageFromTrap(msg *Message) {
 		"STOPPED":             "trapStopped",
 		"MANUAL_MODE_TIMEOUT": "trapManualModeTimeout",
 		"MANUAL_ERROR":        "trapManualError",
+
+		// Holding cage. The payloads are JSON so their fields land in the event details.
+		"CAGE_NO_ENTRY":  "trapCageNoEntry",
+		"CAGE_CAPTURED":  "trapCageCaptured",
+		"CAGE_HOLDING":   "trapCageHolding",
+		"CAGE_RELEASING": "trapCageReleasing",
+		"CAGE_KILLING":   "trapCageKilling",
+		"CAGE_WAITING":   "trapCageWaiting",
+		"CAGE_FINISHED":  "trapCageFinished",
 	}
 
 	// Messages that we want to trigger the events to be uploaded right away.
@@ -391,9 +462,16 @@ func parseMessageFromTrap(msg *Message) {
 		"ENABLED",
 		"DISABLED",
 		"TRIGGERED",
+		"DRY_TRIGGERED",
 		"EXCEPTION",
 		"ERROR_CODE",
 		"MANUAL_ERROR",
+		// The trap can't catch anything until someone sorts out the spool.
+		"SPOOL_RESET_FAILED",
+		// Someone needs to decide what to do with a caught animal, and the trap
+		// releases it on its own if nobody does.
+		"CAGE_CAPTURED",
+		"CAGE_FINISHED",
 	}
 
 	// Handle messages that we want to make events for
